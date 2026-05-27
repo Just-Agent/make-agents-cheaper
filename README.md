@@ -75,6 +75,50 @@ In other words:
 It reduces paid uncached input, not necessarily total input.
 ```
 
+## Fixed-Prefix Explainer
+
+If you need to explain the method to a non-technical audience, the shortest
+version is:
+
+> We are not making tokens disappear. We are keeping the repeated beginning of
+> each request stable, so the provider can recognize and reuse it through
+> prompt cache. Then the expensive uncached part is mostly the smaller changing
+> tail of the request.
+
+![Fixed-prefix prompt-cache explainer](docs/figures/fixed-prefix-cache-explainer.png)
+
+The bad request shape puts changing state at the front:
+
+```text
+request 1: current time A + tool state A + fixed system prompt + task
+request 2: current time B + tool state B + fixed system prompt + task
+request 3: current time C + tool state C + fixed system prompt + task
+```
+
+Even if most of the request is semantically similar, the early prefix has
+already changed. Strict prompt caches may not be able to reuse as much of the
+request.
+
+The cache-friendly shape keeps the stable prefix first:
+
+```text
+request 1: fixed system prompt + fixed tool description + current time A + task
+request 2: fixed system prompt + fixed tool description + current time B + task
+request 3: fixed system prompt + fixed tool description + current time C + task
+```
+
+Now the beginning is identical across requests, so more of the prefix can become
+cached input. Only the later changing portion needs to be paid as uncached input
+again.
+
+In Chinese, the intuition is:
+
+> 我们不是魔法般让 token 消失，而是把每次都一样的开头摆整齐，让模型服务端认出来并复用；这样重复的前缀变成 cached input，真正贵的是后面少量变化的 uncached input，所以花费会下降。
+
+And the careful boundary is:
+
+> 这个方法省的是未缓存输入成本，不是保证总 token 变少；前提是请求之间确实有一大段稳定前缀，而且服务商能观测并计费 prompt cache。
+
 ## Prefix-Cache Evidence Snapshot
 
 The fixed V2 dynamic-drift diagnostic now supports the narrow prefix-cache claim: moving dynamic harness state later reduced paid uncached input while preserving task success.
