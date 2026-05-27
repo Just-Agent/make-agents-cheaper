@@ -119,6 +119,236 @@ And the careful boundary is:
 
 > 这个方法省的是未缓存输入成本，不是保证总 token 变少；前提是请求之间确实有一大段稳定前缀，而且服务商能观测并计费 prompt cache。
 
+## Claude Code Prefix-Cache Tutorial
+
+Claude/Anthropic prompt caching should be explained at two levels:
+
+- API level: the official cumulative order is `tools -> system -> messages`.
+- Claude Code harness level: project context is a real assembled layer even
+  though it is not an Anthropic API top-level field.
+
+The important mechanism is:
+
+```text
+A(B1+B2)PC  ->  AB1P(B2+C)
+```
+
+Where:
+
+```text
+A  = tools
+B1 = fixed system prompt / Claude Code fixed rules
+B2 = dynamic system sections, such as cwd, env, git, memory paths
+P  = project context, such as CLAUDE.md, repo rules, stable memory, skills context
+C  = current task / current turn messages
+```
+
+The flag does not merely change parentheses. It moves volatile `B2` from before
+the stable project context `P` to the later message tail, so a longer prefix
+`A+B1+P` can be reused.
+
+This distinction matters. If the transformation were only:
+
+```text
+A(B1+B2)C  ->  AB1(B2+C)
+```
+
+then the linear order would still be `A -> B1 -> B2 -> C`; the volatile `B2`
+would still block everything after it. The useful transformation needs a stable
+project-context region between the dynamic system section and the current task:
+
+```text
+A -> B1 -> B2 -> P -> C
+```
+
+becomes, in the cache-friendly target:
+
+```text
+A -> B1 -> P -> B2 -> C
+```
+
+`P` is not an Anthropic API top-level field. It is a Claude Code harness concept:
+the stable project context that Claude Code assembles from files and runtime
+state, then serializes into the API `system` or `messages` content blocks. In
+practice, `P` is important because it can be large and stable: `CLAUDE.md`,
+repository rules, durable memory, and skill or workflow context can easily
+dominate the repeated prefix.
+
+![Claude cache API order](docs/figures/claude-cache-api-order.png)
+
+![Claude dynamic system sections moved later](docs/figures/claude-cache-dynamic-system-move.png)
+
+![Claude cache cumulative prefix matching](docs/figures/claude-cache-cumulative-prefix.png)
+
+![Claude project context P explanation](docs/figures/claude-cache-project-context-p.png)
+
+The source-shaped version below is condensed from a Claude Code-style rebuild
+and is included as a structural example. It shows why the baseline can be
+modeled as `A(B1+B2)PC`.
+
+```ts
+// systemContext contains dynamic local state such as git status.
+const fullSystemPrompt = asSystemPrompt(
+  appendSystemContext(systemPrompt, systemContext),
+)
+
+// userContext contains project context such as CLAUDE.md/currentDate and is
+// prepended before the normal conversation messages.
+messages: prependUserContext(messagesForQuery, userContext),
+systemPrompt: fullSystemPrompt,
+```
+
+The relevant helpers have this shape:
+
+```ts
+function appendSystemContext(systemPrompt, context) {
+  return [
+    ...systemPrompt,
+    Object.entries(context)
+      .map(([key, value]) => `${key}: ${value}`)
+      .join('\n'),
+  ].filter(Boolean)
+}
+
+function prependUserContext(messages, context) {
+  return [
+    createUserMessage({
+      content: `<system-reminder>
+As you answer the user's questions, you can use the following context:
+${Object.entries(context)
+  .map(([key, value]) => `# ${key}\n${value}`)
+  .join('\n')}
+</system-reminder>`,
+      isMeta: true,
+    }),
+    ...messages,
+  ]
+}
+```
+
+So in the observed Claude Code-style assembly, the baseline order is:
+
+```text
+tools
+-> fixed system prompt
+-> dynamic systemContext, for example gitStatus
+-> prepended userContext, for example CLAUDE.md/currentDate
+-> conversation history and current task
+```
+
+That is the source-backed reason for the formula:
+
+```text
+A(B1+B2)PC
+```
+
+When `--exclude-dynamic-system-prompt-sections` is used, Claude Code moves
+machine-local dynamic system sections into the first user message/messages
+area. The exact within-message ordering should be verified with raw request
+traces for the specific Claude Code release, but the cache-friendly target is:
+
+```text
+AB1P(B2+C)
+```
+
+Read the claim in two strengths:
+
+```text
+Weak claim, documented by the flag:
+  B2 leaves system and moves into messages.
+  This makes A+B1 more stable.
+
+Strong claim, verified by request traces:
+  B2 moves after P.
+  This makes A+B1+P reusable.
+```
+
+The strong claim is the larger savings mechanism. It explains why the flag is
+more than a small system-prompt cleanup when project context is long and stable.
+
+Prompt-cache blocks are API content blocks, not semantic labels like `cwd` or
+`git`. System strings are converted into text blocks:
+
+```ts
+function buildSystemPromptBlocks(systemPrompt, enablePromptCaching) {
+  return splitSysPromptPrefix(systemPrompt).map(block => ({
+    type: 'text',
+    text: block.text,
+    ...(enablePromptCaching && block.cacheScope !== null
+      ? { cache_control: getCacheControl({ scope: block.cacheScope }) }
+      : {}),
+  }))
+}
+```
+
+User strings are also converted into text blocks when cache control is applied:
+
+```ts
+function userMessageToMessageParam(message, addCache, enablePromptCaching) {
+  if (addCache && typeof message.message.content === 'string') {
+    return {
+      role: 'user',
+      content: [{
+        type: 'text',
+        text: message.message.content,
+        ...(enablePromptCaching
+          ? { cache_control: getCacheControl() }
+          : {}),
+      }],
+    }
+  }
+}
+```
+
+The cache object is an accumulated prefix:
+
+```text
+cache_prefix(block N) = tools + system + messages[0..N]
+```
+
+Therefore, if `B2` changes before `P`, the prefix containing `P` changes too.
+Moving `B2` later lets the stable, often large `P` participate in the reusable
+prefix. This increases the chance of higher cache hit rate and lower paid
+uncached input, but the claim still requires warm-up, measured calls, token
+accounting, and task validation.
+
+To verify the strong version for a concrete Claude Code release, capture or
+normalize the raw request shape and check:
+
+```text
+1. tools are byte-stable across the paired calls.
+2. fixed system blocks are byte-stable.
+3. dynamic cwd/env/git/memory sections are not inside the early system prefix.
+4. project context P appears before the moved dynamic sections in the serialized
+   prompt order, or at least before the cache breakpoint being tested.
+5. token accounting exposes cached input and uncached input fields.
+6. measured calls are compared after warm-up, and validation still passes.
+```
+
+Safe wording:
+
+```text
+This improves the chance that a longer stable prefix is read from prompt cache
+and reduces paid uncached input when provider accounting confirms it.
+```
+
+Avoid wording:
+
+```text
+This always reduces total tokens.
+This removes context from Claude.
+This proves quality is unchanged without validation.
+```
+
+References:
+
+- Anthropic prompt caching documents the cumulative order
+  `tools -> system -> messages` and content-block cache breakpoints:
+  <https://platform.claude.com/docs/en/build-with-claude/prompt-caching>
+- Claude Code CLI documents `--exclude-dynamic-system-prompt-sections` as moving
+  dynamic system-prompt sections into the first user message:
+  <https://code.claude.com/docs/en/cli-usage>
+
 ## Prefix-Cache Evidence Snapshot
 
 The fixed V2 dynamic-drift diagnostic now supports the narrow prefix-cache claim: moving dynamic harness state later reduced paid uncached input while preserving task success.
