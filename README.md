@@ -31,12 +31,12 @@ This is a harness-level counterpart to model-side efficiency work: model provide
 There are three related layers, but they should not be mixed:
 
 - `make-agents-cheaper`: the Rust audit/eval tool. This is the experiment and measurement engine. It fingerprints prompt layers, checks tool schema stability, analyzes cache breakpoints, records token usage, and compares baseline vs cache-friendly runs.
-- `make-agents-cheaper-skill`: the reusable skill packaging layer. A skill turns the method into instructions and runbooks that another agent can apply, but the skill itself is not the primary measurement instrument.
+- `skills/cheaper-skill-for-claude`: the reusable Claude Code skill adapter. A skill turns the method into instructions and runbooks that another agent can apply, but the skill itself is not the primary measurement instrument.
 - `cheapcode` or a future cheaper agent: a possible full agent harness that would own prompt assembly, tools, memory, and routing directly. This is a later product direction, not the current experimental object.
 
 In current experiments, Codex is the development environment used to build the tooling and write the reports. The studied harness is Claude Code, and the backend model/provider in the current setup is MiMo, such as `mimo-v2.5-pro`. The paper should therefore describe the object of study as a Claude Code harness running on a MiMo-compatible model route, with `make-agents-cheaper` used as the audit/eval instrumentation.
 
-So yes: experiments use the audit/eval layer, not the skill layer, as evidence. The skill layer is for reuse and deployment of the same cache-friendly discipline after the method has been made explicit and measurable.
+So yes: experiments use the audit/eval layer, not the skill layer, as evidence. The skill layer lives in `skills/` for reuse and deployment of the same cache-friendly discipline after the method has been made explicit and measurable.
 
 ## Why This Can Be Cheap
 

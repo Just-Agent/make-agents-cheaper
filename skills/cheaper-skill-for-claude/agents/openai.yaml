@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cheaper Skill for Claude"
+  short_description: "Improve Claude Code prompt-cache hit rate"
+  default_prompt: "Use this skill to run Claude Code in a cache-friendly way, keep dynamic system prompt sections later, and record token usage."

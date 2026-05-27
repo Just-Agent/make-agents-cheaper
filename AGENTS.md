@@ -12,7 +12,7 @@ Keep these roles separate:
 - Claude Code: current studied coding-agent harness.
 - MiMo: current backend model/provider route, for example `mimo-v2.5-pro`.
 - `make-agents-cheaper`: Rust audit/eval instrumentation and paper-facing evidence.
-- `make-agents-cheaper-skill`: separate skill-packaging repo for reusable runbooks.
+- `skills/cheaper-skill-for-claude`: in-repo Claude Code skill adapter for reusable runbooks.
 - `cheapcode`: possible future native cheaper-agent harness, not the current experiment.
 
 Do not describe current experiments as Codex-cache experiments unless Codex is actually the harness under test.
